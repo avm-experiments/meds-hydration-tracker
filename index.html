@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Daily Meds & Hydration Tracker</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      margin: 0;
+      padding: 12px;
+      background: #f5f5f7;
+      color: #111827;
+    }
+    h1, h2, h3 { margin: 0 0 8px; }
+    h1 { font-size: 20px; font-weight: 700; }
+    h2 { font-size: 16px; margin-top: 16px; }
+    h3 { font-size: 14px; margin-top: 12px; }
+
+    .card {
+      background: #ffffff;
+      border-radius: 12px;
+      padding: 12px;
+      margin-bottom: 12px;
+      box-shadow: 0 1px 3px rgba(15,23,42,0.08);
+    }
+    .row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin: 4px 0;
+      flex-wrap: wrap;
+    }
+    label { font-size: 14px; }
+    input, select, button { font-family: inherit; font-size: 14px; }
+    input[type="time"], input[type="number"], select {
+      padding: 4px 6px;
+      border-radius: 6px;
+      border: 1px solid #d1d5db;
+      min-width: 90px;
+    }
+    button {
+      border-radius: 999px;
+      border: none;
+      padding: 6px 12px;
+      background: #2563eb;
+      color: white;
+      font-weight: 500;
+      cursor: pointer;
+    }
+    button.secondary {
+      background: #e5e7eb;
+      color: #111827;
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+    .pill {
+      display: inline-flex;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      background: #e5e7eb;
+      color: #374151;
+      align-items: center;
+      gap: 4px;
+    }
+    .pill.ok { background: #dcfce7; color: #166534; }
+    .pill.warn { background: #fee2e2; color: #b91c1c; }
+    .small { font-size: 12px; color: #6b7280; }
+    .stat { font-size: 13px; margin: 2px 0; }
+    hr {
+      border: none;
+      border-top: 1px solid #e5e7eb;
+      margin: 8px 0;
+    }
+  </style>
+</head>
+<body>
+  <h1>Daily Meds & Hydration</h1>
+  <div class="small" id="todayLabel"></div>
+
+  <!-- TODAY: MEDS -->
+  <div class="card">
+    <h2>Meds Checklist</h2>
+    <div class="small">Tap “Taken now” when you take each med. App checks if time is in the recommended window.</div>
+    <div id="medsList"></div>
+    <button class="secondary" onclick="clearTodayMeds()">Clear today’s meds</button>
+  </div>
+
+  <!-- TODAY: HYDRATION -->
+  <div class="card">
+    <h2>Hydration Log</h2>
+    <div class="row">
+      <label for="hydrationType">Type</label>
+      <select id="hydrationType">
+        <option>Water</option>
+        <option>Coffee</option>
+        <option>Gatorade Zero</option>
+        <option>Nuun / Electrolyte</option>
+        <option>Tea</option>
+        <option>Other</option>
+      </select>
+    </div>
+    <div class="row">
+      <label for="hydrationAmount">Amount (oz)</label>
+      <input type="number" id="hydrationAmount" min="1" max="64" value="8">
+      <button onclick="addHydration()">Add</button>
+    </div>
+    <div class="small" id="todayHydrationSummary"></div>
+    <div id="hydrationList" class="small"></div>
+    <button class="secondary" onclick="clearTodayHydration()">Clear today’s hydration</button>
+  </div>
+
+  <!-- STATS -->
+  <div class="card">
+    <h2>Stats</h2>
+    <div class="row">
+      <label for="rangeSelect">Range</label>
+      <select id="rangeSelect" onchange="updateStats()">
+        <option value="7">Last 7 days</option>
+        <option value="30" selected>Last 30 days</option>
+        <option value="365">Last 365 days</option>
+        <option value="all">All time</option>
+      </select>
+    </div>
+    <h3>Hydration</h3>
+    <div id="hydrationStats"></div>
+    <h3>Meds</h3>
+    <div id="medStats"></div>
+  </div>
+
+  <!-- BACKUP / RESTORE -->
+  <div class="card">
+    <h2>Backup & Restore</h2>
+    <div class="small">
+      Export all data to a file (for manual backup or moving to another device).  
+      Import restores it.
+    </div>
+    <div class="row" style="margin-top:8px;">
+      <button class="secondary" onclick="exportData()">Download backup</button>
+      <button class="secondary" onclick="triggerImport()">Restore from file</button>
+    </div>
+    <input type="file" id="importFile" accept="application/json" style="display:none" />
+    <div class="small" id="backupStatus" style="margin-top:6px;"></div>
+  </div>
+
+  <script>
+    // --- CONFIG ---
+
+    const HYDRATION_TARGET_OZ = 60; // your rough daily target
+
+    // Meds & timing windows (24h HH:MM).
+    const MEDS = [
+      { id: 'alendronate', label: 'Alendronate (Sunday AM)', start: '06:00', end: '09:00' },
+      { id: 'calcium_am', label: 'Calcium (AM)', start: '08:00', end: '12:00' },
+      { id: 'calcium_pm', label: 'Calcium (PM)', start: '14:00', end: '18:00' },
+      { id: 'b12', label: 'B12 gummy (AM)', start: '07:00', end: '12:00' },
+      { id: 'magtein', label: 'Magtein (midday)', start: '11:00', end: '15:00' },
+      { id: 'vitc', label: 'Vitamin C (midday)', start: '11:00', end: '15:00' },
+      { id: 'folate', label: 'Folate (midday)', start: '11:00', end: '15:00' },
+      { id: 'mag_gly', label: 'Magnesium glycinate (night)', start: '20:00', end: '23:59' }
+    ];
+
+    const STORAGE_KEY = 'medHydroLog_v1';
+
+    // --- UTILITIES ---
+
+    function todayStr() {
+      const d = new Date();
+      return d.toISOString().slice(0,10); // YYYY-MM-DD
+    }
+
+    function formatTime(d) {
+      return d.toTimeString().slice(0,5); // HH:MM
+    }
+
+    function timeToMinutes(t) {
+      const [h, m] = t.split(':').map(Number);
+      return h * 60 + m;
+    }
+
+    function loadData() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return {};
+        return JSON.parse(raw);
+      } catch (e) {
+        console.error(e);
+        return {};
+      }
+    }
+
+    function saveData(data) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+    }
+
+    function getDay(data, dateStr) {
+      if (!data[dateStr]) {
+        data[dateStr] = { meds: {}, hydration: [] };
+      }
+      return data[dateStr];
+    }
+
+    function isOnTime(med, timeStr) {
+      const t = timeToMinutes(timeStr);
+      const start = timeToMinutes(med.start);
+      const end = timeToMinutes(med.end);
+      return t >= start && t <= end;
+    }
+
+    // --- RENDER TODAY ---
+
+    function renderToday() {
+      const dateStr = todayStr();
+      const data = loadData();
+      const day = getDay(data, dateStr);
+
+      document.getElementById('todayLabel').textContent = `Today: ${dateStr}`;
+
+      // Meds
+      const medsDiv = document.getElementById('medsList');
+      medsDiv.innerHTML = '';
+      MEDS.forEach(med => {
+        const row = document.createElement('div');
+        row.className = 'row';
+
+        const left = document.createElement('div');
+        left.style.flex = '1';
+        left.innerHTML = `<div>${med.label}</div>` +
+          `<div class="small">Recommended: ${med.start}–${med.end}</div>`;
+
+        const right = document.createElement('div');
+        const medLog = day.meds[med.id];
+
+        const btn = document.createElement('button');
+        btn.textContent = medLog ? 'Taken' : 'Taken now';
+        btn.disabled = !!medLog;
+        btn.onclick = () => {
+          const now = new Date();
+          const timeStr = formatTime(now);
+          const onTime = isOnTime(med, timeStr);
+          const data2 = loadData();
+          const d2 = getDay(data2, dateStr);
+          d2.meds[med.id] = { time: timeStr, onTime };
+          saveData(data2);
+          renderToday();
+          updateStats();
+        };
+
+        const info = document.createElement('div');
+        info.className = 'small';
+        if (medLog) {
+          const pill = document.createElement('span');
+          pill.className = 'pill ' + (medLog.onTime ? 'ok' : 'warn');
+          pill.textContent = medLog.onTime
+            ? `On time (${medLog.time})`
+            : `Off window (${medLog.time})`;
+          info.appendChild(pill);
+        }
+
+        right.appendChild(btn);
+        right.appendChild(info);
+
+        row.appendChild(left);
+        row.appendChild(right);
+        medsDiv.appendChild(row);
+      });
+
+      // Hydration
+      const totalOz = day.hydration.reduce((sum, h) => sum + (h.amountOz || 0), 0);
+      const summary = document.getElementById('todayHydrationSummary');
+      summary.innerHTML = `Today: <b>${totalOz} oz</b> / ${HYDRATION_TARGET_OZ} oz` +
+        (totalOz >= HYDRATION_TARGET_OZ ? ' <span class="pill ok">Target hit</span>' : '');
+
+      const listDiv = document.getElementById('hydrationList');
+      if (!day.hydration.length) {
+        listDiv.textContent = 'No entries yet.';
+      } else {
+        listDiv.innerHTML = day.hydration.map(h =>
+          `${h.time} – ${h.type} (${h.amountOz} oz)`
+        ).join('<br>');
+      }
+    }
+
+    // --- HYDRATION LOGGING ---
+
+    function addHydration() {
+      const type = document.getElementById('hydrationType').value;
+      const amount = parseFloat(document.getElementById('hydrationAmount').value || '0');
+      if (!amount || amount <= 0) return;
+
+      const data = loadData();
+      const day = getDay(data, todayStr());
+      day.hydration.push({
+        type,
+        amountOz: amount,
+        time: formatTime(new Date())
+      });
+      saveData(data);
+      renderToday();
+      updateStats();
+    }
+
+    function clearTodayHydration() {
+      if (!confirm('Clear today’s hydration log?')) return;
+      const data = loadData();
+      const day = getDay(data, todayStr());
+      day.hydration = [];
+      saveData(data);
+      renderToday();
+      updateStats();
+    }
+
+    function clearTodayMeds() {
+      if (!confirm('Clear today’s med entries?')) return;
+      const data = loadData();
+      const day = getDay(data, todayStr());
+      day.meds = {};
+      saveData(data);
+      renderToday();
+      updateStats();
+    }
+
+    // --- STATS ---
+
+    function updateStats() {
+      const rangeVal = document.getElementById('rangeSelect').value;
+      const data = loadData();
+      const dates = Object.keys(data).sort(); // ascending
+
+      if (!dates.length) {
+        document.getElementById('hydrationStats').innerHTML = '<div class="small">No data yet.</div>';
+        document.getElementById('medStats').innerHTML = '<div class="small">No data yet.</div>';
+        return;
+      }
+
+      const today = new Date(todayStr());
+      let cutoff = null;
+      if (rangeVal !== 'all') {
+        const days = parseInt(rangeVal, 10);
+        cutoff = new Date(today);
+        cutoff.setDate(cutoff.getDate() - (days - 1));
+      }
+
+      const inRangeDates = dates.filter(d => {
+        if (!cutoff) return true;
+        const dt = new Date(d);
+        return dt >= cutoff && dt <= today;
+      });
+
+      if (!inRangeDates.length) {
+        document.getElementById('hydrationStats').innerHTML = '<div class="small">No data in range.</div>';
+        document.getElementById('medStats').innerHTML = '<div class="small">No data in range.</div>';
+        return;
+      }
+
+      // Hydration stats
+      let hydrationTotals = [];
+      inRangeDates.forEach(d => {
+        const day = data[d];
+        const total = (day.hydration || []).reduce((sum, h) => sum + (h.amountOz || 0), 0);
+        hydrationTotals.push(total);
+      });
+      const daysCount = hydrationTotals.length;
+      const sumHyd = hydrationTotals.reduce((a,b) => a+b, 0);
+      const avgHyd = sumHyd / daysCount;
+      const targetDays = hydrationTotals.filter(v => v >= HYDRATION_TARGET_OZ).length;
+
+      const hydStatsDiv = document.getElementById('hydrationStats');
+      hydStatsDiv.innerHTML = `
+        <div class="stat">Days in range: <b>${daysCount}</b></div>
+        <div class="stat">Avg hydration: <b>${avgHyd.toFixed(1)} oz/day</b></div>
+        <div class="stat">Days hitting target: <b>${targetDays}</b> (${(targetDays / daysCount * 100).toFixed(0)}%)</div>
+      `;
+
+      // Med stats
+      let totalMedEvents = 0;
+      let onTimeEvents = 0;
+      inRangeDates.forEach(d => {
+        const day = data[d];
+        const meds = day.meds || {};
+        Object.values(meds).forEach(m => {
+          totalMedEvents += 1;
+          if (m.onTime) onTimeEvents += 1;
+        });
+      });
+
+      const medStatsDiv = document.getElementById('medStats');
+      if (!totalMedEvents) {
+        medStatsDiv.innerHTML = '<div class="small">No meds logged in this range.</div>';
+      } else {
+        const pct = (onTimeEvents / totalMedEvents * 100).toFixed(0);
+        medStatsDiv.innerHTML = `
+          <div class="stat">Meds logged: <b>${totalMedEvents}</b></div>
+          <div class="stat">Taken in recommended time window: <b>${onTimeEvents}</b> (${pct}%)</div>
+        `;
+      }
+    }
+
+    // --- BACKUP / RESTORE ---
+
+    function exportData() {
+      const data = localStorage.getItem(STORAGE_KEY) || '{}';
+      const blob = new Blob([data], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `meds_hydration_backup_${todayStr()}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      const status = document.getElementById('backupStatus');
+      status.textContent = 'Backup downloaded.';
+    }
+
+    function triggerImport() {
+      const input = document.getElementById('importFile');
+      input.value = '';
+      input.click();
+    }
+
+    document.getElementById('importFile').addEventListener('change', function (evt) {
+      const file = evt.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function (e) {
+        try {
+          const parsed = JSON.parse(e.target.result);
+          if (typeof parsed === 'object' && parsed !== null) {
+            saveData(parsed);
+            renderToday();
+            updateStats();
+            document.getElementById('backupStatus').textContent = 'Backup restored successfully.';
+          } else {
+            document.getElementById('backupStatus').textContent = 'Invalid file format.';
+          }
+        } catch (err) {
+          console.error(err);
+          document.getElementById('backupStatus').textContent = 'Error reading backup.';
+        }
+      };
+      reader.readAsText(file);
+    });
+
+    // --- INIT ---
+
+    document.addEventListener('DOMContentLoaded', () => {
+      renderToday();
+      updateStats();
+    });
+  </script>
+</body>
+</html>
