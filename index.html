@@ -53,6 +53,10 @@
       background: #e5e7eb;
       color: #111827;
     }
+    button.small-btn {
+      padding: 4px 8px;
+      font-size: 12px;
+    }
     button:disabled {
       opacity: 0.5;
       cursor: default;
@@ -81,7 +85,20 @@
 </head>
 <body>
   <h1>Daily Meds & Hydration</h1>
-  <div class="small" id="todayLabel"></div>
+
+  <!-- DATE / DAY SELECTOR -->
+  <div class="row">
+    <div class="small" id="todayLabel"></div>
+    <div class="row" style="justify-content:flex-end;">
+      <label for="daySelect" class="small">Day</label>
+      <select id="daySelect">
+        <option value="0">Today</option>
+        <option value="1">Yesterday</option>
+        <option value="2">2 days ago</option>
+        <option value="3">3 days ago</option>
+      </select>
+    </div>
+  </div>
 
   <!-- TODAY: MEDS -->
   <div class="card">
@@ -90,7 +107,7 @@
       Enter the time you took each med and tap <b>Save</b>. The app checks if it’s in the recommended window.
     </div>
     <div id="medsList"></div>
-    <button class="secondary" onclick="clearTodayMeds()">Clear today’s meds</button>
+    <button class="secondary" onclick="clearSelectedDayMeds()">Clear this day’s meds</button>
   </div>
 
   <!-- TODAY: HYDRATION -->
@@ -114,7 +131,7 @@
     </div>
     <div class="small" id="todayHydrationSummary"></div>
     <div id="hydrationList" class="small"></div>
-    <button class="secondary" onclick="clearTodayHydration()">Clear today’s hydration</button>
+    <button class="secondary" onclick="clearSelectedDayHydration()">Clear this day’s hydration</button>
   </div>
 
   <!-- STATS -->
@@ -167,12 +184,31 @@
     ];
 
     const STORAGE_KEY = 'medHydroLog_v1';
+    let dayOffset = 0; // 0 = today, 1 = yesterday, etc.
 
     // --- UTILITIES ---
 
     function todayStr() {
       const d = new Date();
-      return d.toISOString().slice(0,10); // YYYY-MM-DD
+      d.setHours(0,0,0,0);
+      return d.toISOString().slice(0,10);
+    }
+
+    function dateStrFromOffset(offset) {
+      const d = new Date();
+      d.setHours(0,0,0,0);
+      d.setDate(d.getDate() - offset);
+      return d.toISOString().slice(0,10);
+    }
+
+    function currentDateStr() {
+      return dateStrFromOffset(dayOffset);
+    }
+
+    function offsetLabel(offset) {
+      if (offset === 0) return 'Today';
+      if (offset === 1) return 'Yesterday';
+      return `${offset} days ago`;
     }
 
     function formatTime(d) {
@@ -213,14 +249,16 @@
       return t >= start && t <= end;
     }
 
-    // --- RENDER TODAY ---
+    // --- RENDER SELECTED DAY ---
 
-    function renderToday() {
-      const dateStr = todayStr();
+    function renderCurrentDay() {
+      const dateStr = currentDateStr();
       const data = loadData();
       const day = getDay(data, dateStr);
 
-      document.getElementById('todayLabel').textContent = `Today: ${dateStr}`;
+      // Label at top
+      const label = document.getElementById('todayLabel');
+      label.textContent = `Viewing: ${dateStr} (${offsetLabel(dayOffset)})`;
 
       // Meds
       const medsDiv = document.getElementById('medsList');
@@ -257,20 +295,19 @@
         }
 
         const btn = document.createElement('button');
-        btn.textContent = medLog ? 'Save' : 'Save';
+        btn.textContent = 'Save';
         btn.onclick = () => {
           let timeStr = document.getElementById(timeInputId).value;
           if (!timeStr) {
-            // default to current time if none entered
             timeStr = formatTime(new Date());
             document.getElementById(timeInputId).value = timeStr;
           }
           const onTime = isOnTime(med, timeStr);
           const data2 = loadData();
-          const d2 = getDay(data2, dateStr);
+          const d2 = getDay(data2, currentDateStr());
           d2.meds[med.id] = { time: timeStr, onTime };
           saveData(data2);
-          renderToday();
+          renderCurrentDay();
           updateStats();
         };
 
@@ -296,19 +333,43 @@
         medsDiv.appendChild(row);
       });
 
-      // Hydration
+      // Hydration summary + list
       const totalOz = day.hydration.reduce((sum, h) => sum + (h.amountOz || 0), 0);
       const summary = document.getElementById('todayHydrationSummary');
-      summary.innerHTML = `Today: <b>${totalOz} oz</b> / ${HYDRATION_TARGET_OZ} oz` +
+      summary.innerHTML = `This day: <b>${totalOz} oz</b> / ${HYDRATION_TARGET_OZ} oz` +
         (totalOz >= HYDRATION_TARGET_OZ ? ' <span class="pill ok">Target hit</span>' : '');
 
       const listDiv = document.getElementById('hydrationList');
+      listDiv.innerHTML = '';
       if (!day.hydration.length) {
         listDiv.textContent = 'No entries yet.';
       } else {
-        listDiv.innerHTML = day.hydration.map(h =>
-          `${h.time} – ${h.type} (${h.amountOz} oz)`
-        ).join('<br>');
+        day.hydration.forEach((h, index) => {
+          const row = document.createElement('div');
+          row.className = 'row';
+          row.style.alignItems = 'center';
+
+          const left = document.createElement('div');
+          left.textContent = `${h.time} – ${h.type} (${h.amountOz} oz)`;
+
+          const right = document.createElement('div');
+          const delBtn = document.createElement('button');
+          delBtn.textContent = 'Delete';
+          delBtn.className = 'secondary small-btn';
+          delBtn.onclick = () => {
+            const data2 = loadData();
+            const d2 = getDay(data2, currentDateStr());
+            d2.hydration.splice(index, 1);
+            saveData(data2);
+            renderCurrentDay();
+            updateStats();
+          };
+          right.appendChild(delBtn);
+
+          row.appendChild(left);
+          row.appendChild(right);
+          listDiv.appendChild(row);
+        });
       }
     }
 
@@ -320,34 +381,34 @@
       if (!amount || amount <= 0) return;
 
       const data = loadData();
-      const day = getDay(data, todayStr());
+      const day = getDay(data, currentDateStr());
       day.hydration.push({
         type,
         amountOz: amount,
         time: formatTime(new Date())
       });
       saveData(data);
-      renderToday();
+      renderCurrentDay();
       updateStats();
     }
 
-    function clearTodayHydration() {
-      if (!confirm('Clear today’s hydration log?')) return;
+    function clearSelectedDayHydration() {
+      if (!confirm('Clear hydration for this day?')) return;
       const data = loadData();
-      const day = getDay(data, todayStr());
+      const day = getDay(data, currentDateStr());
       day.hydration = [];
       saveData(data);
-      renderToday();
+      renderCurrentDay();
       updateStats();
     }
 
-    function clearTodayMeds() {
-      if (!confirm('Clear today’s med entries?')) return;
+    function clearSelectedDayMeds() {
+      if (!confirm('Clear med entries for this day?')) return;
       const data = loadData();
-      const day = getDay(data, todayStr());
+      const day = getDay(data, currentDateStr());
       day.meds = {};
       saveData(data);
-      renderToday();
+      renderCurrentDay();
       updateStats();
     }
 
@@ -364,18 +425,18 @@
         return;
       }
 
-      const today = new Date(todayStr());
+      const todayDate = new Date(todayStr());
       let cutoff = null;
       if (rangeVal !== 'all') {
         const days = parseInt(rangeVal, 10);
-        cutoff = new Date(today);
+        cutoff = new Date(todayDate);
         cutoff.setDate(cutoff.getDate() - (days - 1));
       }
 
       const inRangeDates = dates.filter(d => {
         if (!cutoff) return true;
         const dt = new Date(d);
-        return dt >= cutoff && dt <= today;
+        return dt >= cutoff && dt <= todayDate;
       });
 
       if (!inRangeDates.length) {
@@ -459,7 +520,7 @@
           const parsed = JSON.parse(e.target.result);
           if (typeof parsed === 'object' && parsed !== null) {
             saveData(parsed);
-            renderToday();
+            renderCurrentDay();
             updateStats();
             document.getElementById('backupStatus').textContent = 'Backup restored successfully.';
           } else {
@@ -476,7 +537,14 @@
     // --- INIT ---
 
     document.addEventListener('DOMContentLoaded', () => {
-      renderToday();
+      const daySelect = document.getElementById('daySelect');
+      daySelect.addEventListener('change', () => {
+        dayOffset = parseInt(daySelect.value, 10) || 0;
+        renderCurrentDay();
+        updateStats();
+      });
+
+      renderCurrentDay();
       updateStats();
     });
   </script>
