@@ -66,6 +66,7 @@
       color: #374151;
       align-items: center;
       gap: 4px;
+      margin-top: 2px;
     }
     .pill.ok { background: #dcfce7; color: #166534; }
     .pill.warn { background: #fee2e2; color: #b91c1c; }
@@ -85,7 +86,9 @@
   <!-- TODAY: MEDS -->
   <div class="card">
     <h2>Meds Checklist</h2>
-    <div class="small">Tap “Taken now” when you take each med. App checks if time is in the recommended window.</div>
+    <div class="small">
+      Enter the time you took each med and tap <b>Save</b>. The app checks if it’s in the recommended window.
+    </div>
     <div id="medsList"></div>
     <button class="secondary" onclick="clearTodayMeds()">Clear today’s meds</button>
   </div>
@@ -136,8 +139,7 @@
   <div class="card">
     <h2>Backup & Restore</h2>
     <div class="small">
-      Export all data to a file (for manual backup or moving to another device).  
-      Import restores it.
+      Export all data to a file (for manual backup or moving to another device). Import restores it.
     </div>
     <div class="row" style="margin-top:8px;">
       <button class="secondary" onclick="exportData()">Download backup</button>
@@ -233,14 +235,36 @@
           `<div class="small">Recommended: ${med.start}–${med.end}</div>`;
 
         const right = document.createElement('div');
+        right.style.display = 'flex';
+        right.style.flexDirection = 'column';
+        right.style.alignItems = 'flex-end';
+        right.style.gap = '4px';
+
+        const inputRow = document.createElement('div');
+        inputRow.style.display = 'flex';
+        inputRow.style.gap = '4px';
+        inputRow.style.alignItems = 'center';
+
+        const timeInputId = `time_${med.id}`;
+        const timeInput = document.createElement('input');
+        timeInput.type = 'time';
+        timeInput.id = timeInputId;
+        timeInput.style.minWidth = '90px';
+
         const medLog = day.meds[med.id];
+        if (medLog && medLog.time) {
+          timeInput.value = medLog.time;
+        }
 
         const btn = document.createElement('button');
-        btn.textContent = medLog ? 'Taken' : 'Taken now';
-        btn.disabled = !!medLog;
+        btn.textContent = medLog ? 'Save' : 'Save';
         btn.onclick = () => {
-          const now = new Date();
-          const timeStr = formatTime(now);
+          let timeStr = document.getElementById(timeInputId).value;
+          if (!timeStr) {
+            // default to current time if none entered
+            timeStr = formatTime(new Date());
+            document.getElementById(timeInputId).value = timeStr;
+          }
           const onTime = isOnTime(med, timeStr);
           const data2 = loadData();
           const d2 = getDay(data2, dateStr);
@@ -249,6 +273,9 @@
           renderToday();
           updateStats();
         };
+
+        inputRow.appendChild(timeInput);
+        inputRow.appendChild(btn);
 
         const info = document.createElement('div');
         info.className = 'small';
@@ -261,7 +288,7 @@
           info.appendChild(pill);
         }
 
-        right.appendChild(btn);
+        right.appendChild(inputRow);
         right.appendChild(info);
 
         row.appendChild(left);
