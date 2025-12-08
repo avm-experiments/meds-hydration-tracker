@@ -100,17 +100,26 @@
     </div>
   </div>
 
-  <!-- TODAY: MEDS -->
+  <!-- MEDS -->
   <div class="card">
     <h2>Meds Checklist</h2>
     <div class="small">
       Enter the time you took each med and tap <b>Save</b>. The app checks if it’s in the recommended window.
     </div>
+
+    <!-- Coffee finish time (v1.1) -->
+    <div class="row" style="margin-top:6px;">
+      <label for="coffeeTime">Coffee finished</label>
+      <input type="time" id="coffeeTime">
+      <button class="secondary small-btn" onclick="saveCoffeeTime()">Save</button>
+    </div>
+    <div class="small" id="coffeeInfo" style="margin-bottom:6px;"></div>
+
     <div id="medsList"></div>
     <button class="secondary" onclick="clearSelectedDayMeds()">Clear this day’s meds</button>
   </div>
 
-  <!-- TODAY: HYDRATION -->
+  <!-- HYDRATION -->
   <div class="card">
     <h2>Hydration Log</h2>
     <div class="row">
@@ -169,9 +178,8 @@
   <script>
     // --- CONFIG ---
 
-    const HYDRATION_TARGET_OZ = 60; // your rough daily target
+    const HYDRATION_TARGET_OZ = 60;
 
-    // Meds & timing windows (24h HH:MM).
     const MEDS = [
       { id: 'alendronate', label: 'Alendronate (Sunday AM)', start: '06:00', end: '09:00' },
       { id: 'calcium_am', label: 'Calcium (AM)', start: '08:00', end: '12:00' },
@@ -220,6 +228,15 @@
       return h * 60 + m;
     }
 
+    function addMinutesToTimeStr(t, delta) {
+      const [h, m] = t.split(':').map(Number);
+      let total = h * 60 + m + delta;
+      total = ((total % 1440) + 1440) % 1440;
+      const hh = String(Math.floor(total / 60)).padStart(2, '0');
+      const mm = String(total % 60).padStart(2, '0');
+      return `${hh}:${mm}`;
+    }
+
     function loadData() {
       try {
         const raw = localStorage.getItem(STORAGE_KEY);
@@ -237,28 +254,56 @@
 
     function getDay(data, dateStr) {
       if (!data[dateStr]) {
-        data[dateStr] = { meds: {}, hydration: [] };
+        data[dateStr] = { meds: {}, hydration: [], coffeeFinish: null };
+      } else {
+        if (!('coffeeFinish' in data[dateStr])) {
+          data[dateStr].coffeeFinish = null; // backward compatible
+        }
       }
       return data[dateStr];
     }
 
-    function isOnTime(med, timeStr) {
+    function isOnTime(med, timeStr, day) {
       const t = timeToMinutes(timeStr);
       const start = timeToMinutes(med.start);
       const end = timeToMinutes(med.end);
-      return t >= start && t <= end;
+      let ok = (t >= start && t <= end);
+      if (!ok) return false;
+
+      // Extra calcium rule: must also be >= 1 hour after coffee, if coffee is logged
+      if ((med.id === 'calcium_am' || med.id === 'calcium_pm') && day && day.coffeeFinish) {
+        const coffeeBase = timeToMinutes(day.coffeeFinish);
+        const minCalcium = coffeeBase + 60;
+        if (t < minCalcium) return false;
+      }
+      return true;
     }
 
-    // --- RENDER SELECTED DAY ---
+    // --- RENDER CURRENT DAY ---
 
     function renderCurrentDay() {
       const dateStr = currentDateStr();
       const data = loadData();
       const day = getDay(data, dateStr);
 
-      // Label at top
+      // Label
       const label = document.getElementById('todayLabel');
       label.textContent = `Viewing: ${dateStr} (${offsetLabel(dayOffset)})`;
+
+      // Coffee UI
+      const coffeeInput = document.getElementById('coffeeTime');
+      const coffeeInfo = document.getElementById('coffeeInfo');
+      if (coffeeInput) {
+        coffeeInput.value = day.coffeeFinish || '';
+      }
+      if (coffeeInfo) {
+        if (day.coffeeFinish) {
+          const earliest = addMinutesToTimeStr(day.coffeeFinish, 60);
+          coffeeInfo.textContent = `Coffee finished at ${day.coffeeFinish}. Earliest calcium: ${earliest}.`;
+        } else {
+          coffeeInfo.textContent = 'No coffee time logged for this day.';
+        }
+      }
 
       // Meds
       const medsDiv = document.getElementById('medsList');
@@ -302,9 +347,9 @@
             timeStr = formatTime(new Date());
             document.getElementById(timeInputId).value = timeStr;
           }
-          const onTime = isOnTime(med, timeStr);
           const data2 = loadData();
           const d2 = getDay(data2, currentDateStr());
+          const onTime = isOnTime(med, timeStr, d2);
           d2.meds[med.id] = { time: timeStr, onTime };
           saveData(data2);
           renderCurrentDay();
@@ -373,6 +418,20 @@
       }
     }
 
+    // --- COFFEE HANDLING (v1.1) ---
+
+    function saveCoffeeTime() {
+      const input = document.getElementById('coffeeTime');
+      if (!input) return;
+      const val = input.value || null;
+      const data = loadData();
+      const day = getDay(data, currentDateStr());
+      day.coffeeFinish = val;
+      saveData(data);
+      renderCurrentDay();
+      updateStats();
+    }
+
     // --- HYDRATION LOGGING ---
 
     function addHydration() {
@@ -417,7 +476,7 @@
     function updateStats() {
       const rangeVal = document.getElementById('rangeSelect').value;
       const data = loadData();
-      const dates = Object.keys(data).sort(); // ascending
+      const dates = Object.keys(data).sort();
 
       if (!dates.length) {
         document.getElementById('hydrationStats').innerHTML = '<div class="small">No data yet.</div>';
