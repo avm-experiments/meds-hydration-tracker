@@ -107,7 +107,7 @@
       Enter the time you took each med and tap <b>Save</b>. The app checks if it’s in the recommended window.
     </div>
 
-    <!-- Coffee finish time (v1.1) -->
+    <!-- Coffee finish time -->
     <div class="row" style="margin-top:6px;">
       <label for="coffeeTime">Coffee finished</label>
       <input type="time" id="coffeeTime">
@@ -263,19 +263,55 @@
       return data[dateStr];
     }
 
+    // --- TIMING LOGIC ---
+
     function isOnTime(med, timeStr, day) {
       const t = timeToMinutes(timeStr);
       const start = timeToMinutes(med.start);
       const end = timeToMinutes(med.end);
+
+      // Special handling for AM calcium:
+      // Only enforce "not too early", and include coffee+1hr if present.
+      if (med.id === 'calcium_am') {
+        let earliest = start; // default earliest = 08:00
+
+        if (day && day.coffeeFinish) {
+          const coffeeBase = timeToMinutes(day.coffeeFinish);
+          const afterCoffee = coffeeBase + 60; // coffee + 1 hour
+          if (afterCoffee > earliest) {
+            earliest = afterCoffee;
+          }
+        }
+
+        // On-time if taken at or after the earliest allowed time.
+        return t >= earliest;
+      }
+
+      // Default rule for all other meds: must fall within their basic window.
       let ok = (t >= start && t <= end);
       if (!ok) return false;
 
-      // Extra calcium rule: must also be >= 1 hour after coffee, if coffee is logged
-      if ((med.id === 'calcium_am' || med.id === 'calcium_pm') && day && day.coffeeFinish) {
-        const coffeeBase = timeToMinutes(day.coffeeFinish);
-        const minCalcium = coffeeBase + 60;
-        if (t < minCalcium) return false;
+      // Extra rules for calcium PM
+      if (med.id === 'calcium_pm') {
+        // 1) Coffee -> calcium: must be >= coffee + 1 hour, if coffee is logged.
+        if (day && day.coffeeFinish) {
+          const coffeeBase = timeToMinutes(day.coffeeFinish);
+          const minCalciumAfterCoffee = coffeeBase + 60;
+          if (t < minCalciumAfterCoffee) {
+            return false;
+          }
+        }
+
+        // 2) Calcium PM must be at least 4 hours after Calcium AM, if AM is logged.
+        if (day && day.meds && day.meds['calcium_am'] && day.meds['calcium_am'].time) {
+          const amTime = timeToMinutes(day.meds['calcium_am'].time);
+          const minPmAfterAm = amTime + 240; // 4 hours = 240 minutes
+          if (t < minPmAfterAm) {
+            return false;
+          }
+        }
       }
+
       return true;
     }
 
@@ -418,7 +454,7 @@
       }
     }
 
-    // --- COFFEE HANDLING (v1.1) ---
+    // --- COFFEE HANDLING ---
 
     function saveCoffeeTime() {
       const input = document.getElementById('coffeeTime');
