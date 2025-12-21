@@ -105,6 +105,7 @@
     <h2>Meds Checklist</h2>
     <div class="small">
       Enter the time you took each med and tap <b>Save</b>. The app checks if it’s in the recommended window.
+      Required rules are enforced; optional ones are just suggestions.
     </div>
 
     <!-- Coffee finish time -->
@@ -122,6 +123,7 @@
   <!-- HYDRATION -->
   <div class="card">
     <h2>Hydration Log</h2>
+
     <div class="row">
       <label for="hydrationType">Type</label>
       <select id="hydrationType">
@@ -133,11 +135,19 @@
         <option>Other</option>
       </select>
     </div>
+
     <div class="row">
       <label for="hydrationAmount">Amount (oz)</label>
       <input type="number" id="hydrationAmount" min="1" max="64" value="8">
+    </div>
+
+    <!-- NEW: hydration time entry -->
+    <div class="row">
+      <label for="hydrationTime">Time</label>
+      <input type="time" id="hydrationTime">
       <button onclick="addHydration()">Add</button>
     </div>
+
     <div class="small" id="todayHydrationSummary"></div>
     <div id="hydrationList" class="small"></div>
     <button class="secondary" onclick="clearSelectedDayHydration()">Clear this day’s hydration</button>
@@ -180,10 +190,16 @@
 
     const HYDRATION_TARGET_OZ = 60;
 
+    // Required timing rule parameters
+    const COFFEE_TO_CALCIUM_MIN = 60;    // minutes
+    const CALCIUM_DOSE_GAP_MIN = 240;    // 4 hours
+    const ALENDRONATE_FASTING_MIN = 30;  // minutes before coffee/food
+    const ALENDRONATE_TO_CALCIUM_MIN = 120; // 2 hours separation (configurable)
+
     const MEDS = [
       { id: 'alendronate', label: 'Alendronate (Sunday AM)', start: '06:00', end: '09:00' },
-      { id: 'calcium_am', label: 'Calcium (AM)', start: '08:00', end: '12:00' },
-      { id: 'calcium_pm', label: 'Calcium (PM)', start: '14:00', end: '18:00' },
+      { id: 'calcium_am', label: 'Calcium (Dose 1)', start: '08:00', end: '12:00' },
+      { id: 'calcium_pm', label: 'Calcium (Dose 2)', start: '14:00', end: '18:00' },
       { id: 'b12', label: 'B12 gummy (AM)', start: '07:00', end: '12:00' },
       { id: 'magtein', label: 'Magtein (midday)', start: '11:00', end: '15:00' },
       { id: 'vitc', label: 'Vitamin C (midday)', start: '11:00', end: '15:00' },
@@ -252,63 +268,82 @@
       localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
     }
 
+    // Backward compatible day model:
+    // - coffeeFinish may not exist
+    // - hydration entries may not have explicit time (we default to "00:00" in display)
+    // - fastingAfterAlendronate may not exist
     function getDay(data, dateStr) {
       if (!data[dateStr]) {
-        data[dateStr] = { meds: {}, hydration: [], coffeeFinish: null };
+        data[dateStr] = { meds: {}, hydration: [], coffeeFinish: null, fastingAfterAlendronate: null };
       } else {
-        if (!('coffeeFinish' in data[dateStr])) {
-          data[dateStr].coffeeFinish = null; // backward compatible
-        }
+        if (!('coffeeFinish' in data[dateStr])) data[dateStr].coffeeFinish = null;
+        if (!('fastingAfterAlendronate' in data[dateStr])) data[dateStr].fastingAfterAlendronate = null;
+        if (!('hydration' in data[dateStr])) data[dateStr].hydration = [];
+        if (!('meds' in data[dateStr])) data[dateStr].meds = {};
       }
       return data[dateStr];
     }
 
-    // --- TIMING LOGIC ---
+    // --- REQUIRED TIMING LOGIC ---
 
     function isOnTime(med, timeStr, day) {
       const t = timeToMinutes(timeStr);
       const start = timeToMinutes(med.start);
       const end = timeToMinutes(med.end);
 
-      // Special handling for AM calcium:
-      // Only enforce "not too early", and include coffee+1hr if present.
+      // ALENDRONATE: require within window AND (if provided) food/coffee must be >= 30 min after
+      if (med.id === 'alendronate') {
+        if (!(t >= start && t <= end)) return false;
+
+        // If the user provides "first coffee/food after alendronate", enforce >= 30 min
+        if (day && day.fastingAfterAlendronate) {
+          const after = timeToMinutes(day.fastingAfterAlendronate);
+          if (after < t + ALENDRONATE_FASTING_MIN) return false;
+        }
+
+        return true;
+      }
+
+      // CALCIUM DOSE 1: enforce "not too early" based on coffee finish + 1 hr
       if (med.id === 'calcium_am') {
-        let earliest = start; // default earliest = 08:00
+        let earliest = start; // 08:00 baseline
 
         if (day && day.coffeeFinish) {
           const coffeeBase = timeToMinutes(day.coffeeFinish);
-          const afterCoffee = coffeeBase + 60; // coffee + 1 hour
-          if (afterCoffee > earliest) {
-            earliest = afterCoffee;
-          }
+          earliest = Math.max(earliest, coffeeBase + COFFEE_TO_CALCIUM_MIN);
         }
 
-        // On-time if taken at or after the earliest allowed time.
+        // Also enforce separation from alendronate if alendronate logged
+        if (day && day.meds && day.meds['alendronate'] && day.meds['alendronate'].time) {
+          const a = timeToMinutes(day.meds['alendronate'].time);
+          earliest = Math.max(earliest, a + ALENDRONATE_TO_CALCIUM_MIN);
+        }
+
         return t >= earliest;
       }
 
-      // Default rule for all other meds: must fall within their basic window.
+      // DEFAULT meds: basic window only
       let ok = (t >= start && t <= end);
       if (!ok) return false;
 
-      // Extra rules for calcium PM
+      // CALCIUM DOSE 2: enforce window + coffee rule + spacing from dose 1 + separation from alendronate
       if (med.id === 'calcium_pm') {
-        // 1) Coffee -> calcium: must be >= coffee + 1 hour, if coffee is logged.
+        // Coffee -> calcium
         if (day && day.coffeeFinish) {
           const coffeeBase = timeToMinutes(day.coffeeFinish);
-          const minCalciumAfterCoffee = coffeeBase + 60;
-          if (t < minCalciumAfterCoffee) {
-            return false;
-          }
+          if (t < coffeeBase + COFFEE_TO_CALCIUM_MIN) return false;
         }
 
-        // 2) Calcium PM must be at least 4 hours after Calcium AM, if AM is logged.
+        // Dose spacing: Dose 2 >= 4 hours after Dose 1, if Dose 1 is logged
         if (day && day.meds && day.meds['calcium_am'] && day.meds['calcium_am'].time) {
           const amTime = timeToMinutes(day.meds['calcium_am'].time);
-          const minPmAfterAm = amTime + 240; // 4 hours = 240 minutes
-          if (t < minPmAfterAm) {
-            return false;
-          }
+          if (t < amTime + CALCIUM_DOSE_GAP_MIN) return false;
+        }
+
+        // Separation from alendronate if logged
+        if (day && day.meds && day.meds['alendronate'] && day.meds['alendronate'].time) {
+          const a = timeToMinutes(day.meds['alendronate'].time);
+          if (t < a + ALENDRONATE_TO_CALCIUM_MIN) return false;
         }
       }
 
@@ -322,28 +357,27 @@
       const data = loadData();
       const day = getDay(data, dateStr);
 
-      // Label
-      const label = document.getElementById('todayLabel');
-      label.textContent = `Viewing: ${dateStr} (${offsetLabel(dayOffset)})`;
+      document.getElementById('todayLabel').textContent = `Viewing: ${dateStr} (${offsetLabel(dayOffset)})`;
 
       // Coffee UI
       const coffeeInput = document.getElementById('coffeeTime');
       const coffeeInfo = document.getElementById('coffeeInfo');
-      if (coffeeInput) {
-        coffeeInput.value = day.coffeeFinish || '';
-      }
-      if (coffeeInfo) {
-        if (day.coffeeFinish) {
-          const earliest = addMinutesToTimeStr(day.coffeeFinish, 60);
-          coffeeInfo.textContent = `Coffee finished at ${day.coffeeFinish}. Earliest calcium: ${earliest}.`;
-        } else {
-          coffeeInfo.textContent = 'No coffee time logged for this day.';
-        }
+      coffeeInput.value = day.coffeeFinish || '';
+      if (day.coffeeFinish) {
+        const earliest = addMinutesToTimeStr(day.coffeeFinish, COFFEE_TO_CALCIUM_MIN);
+        coffeeInfo.textContent = `Coffee finished at ${day.coffeeFinish}. Earliest calcium: ${earliest}.`;
+      } else {
+        coffeeInfo.textContent = 'No coffee time logged for this day.';
       }
 
-      // Meds
+      // Hydration time input default to now (for convenience)
+      const hydTime = document.getElementById('hydrationTime');
+      if (hydTime && !hydTime.value) hydTime.value = formatTime(new Date());
+
+      // Meds list
       const medsDiv = document.getElementById('medsList');
       medsDiv.innerHTML = '';
+
       MEDS.forEach(med => {
         const row = document.createElement('div');
         row.className = 'row';
@@ -371,9 +405,7 @@
         timeInput.style.minWidth = '90px';
 
         const medLog = day.meds[med.id];
-        if (medLog && medLog.time) {
-          timeInput.value = medLog.time;
-        }
+        if (medLog && medLog.time) timeInput.value = medLog.time;
 
         const btn = document.createElement('button');
         btn.textContent = 'Save';
@@ -395,6 +427,49 @@
         inputRow.appendChild(timeInput);
         inputRow.appendChild(btn);
 
+        // Alendronate fasting helper input (required rule enforcement)
+        if (med.id === 'alendronate') {
+          const fastingRow = document.createElement('div');
+          fastingRow.className = 'row';
+          fastingRow.style.justifyContent = 'flex-end';
+          fastingRow.style.marginTop = '2px';
+
+          const lbl = document.createElement('label');
+          lbl.className = 'small';
+          lbl.textContent = 'First coffee/food after';
+
+          const afterId = 'alendronateAfter';
+          const afterInput = document.createElement('input');
+          afterInput.type = 'time';
+          afterInput.id = afterId;
+          afterInput.style.minWidth = '90px';
+          afterInput.value = day.fastingAfterAlendronate || '';
+
+          const saveAfter = document.createElement('button');
+          saveAfter.className = 'secondary small-btn';
+          saveAfter.textContent = 'Save';
+          saveAfter.onclick = () => {
+            const data2 = loadData();
+            const d2 = getDay(data2, currentDateStr());
+            d2.fastingAfterAlendronate = afterInput.value || null;
+
+            // Recompute alendronate status if already logged
+            if (d2.meds['alendronate'] && d2.meds['alendronate'].time) {
+              const aTime = d2.meds['alendronate'].time;
+              d2.meds['alendronate'].onTime = isOnTime(med, aTime, d2);
+            }
+
+            saveData(data2);
+            renderCurrentDay();
+            updateStats();
+          };
+
+          fastingRow.appendChild(lbl);
+          fastingRow.appendChild(afterInput);
+          fastingRow.appendChild(saveAfter);
+          right.appendChild(fastingRow);
+        }
+
         const info = document.createElement('div');
         info.className = 'small';
         if (medLog) {
@@ -415,14 +490,14 @@
       });
 
       // Hydration summary + list
-      const totalOz = day.hydration.reduce((sum, h) => sum + (h.amountOz || 0), 0);
+      const totalOz = (day.hydration || []).reduce((sum, h) => sum + (h.amountOz || 0), 0);
       const summary = document.getElementById('todayHydrationSummary');
       summary.innerHTML = `This day: <b>${totalOz} oz</b> / ${HYDRATION_TARGET_OZ} oz` +
         (totalOz >= HYDRATION_TARGET_OZ ? ' <span class="pill ok">Target hit</span>' : '');
 
       const listDiv = document.getElementById('hydrationList');
       listDiv.innerHTML = '';
-      if (!day.hydration.length) {
+      if (!day.hydration || !day.hydration.length) {
         listDiv.textContent = 'No entries yet.';
       } else {
         day.hydration.forEach((h, index) => {
@@ -430,8 +505,9 @@
           row.className = 'row';
           row.style.alignItems = 'center';
 
+          const timeStr = h.time || '00:00';
           const left = document.createElement('div');
-          left.textContent = `${h.time} – ${h.type} (${h.amountOz} oz)`;
+          left.textContent = `${timeStr} – ${h.type} (${h.amountOz} oz)`;
 
           const right = document.createElement('div');
           const delBtn = document.createElement('button');
@@ -458,7 +534,6 @@
 
     function saveCoffeeTime() {
       const input = document.getElementById('coffeeTime');
-      if (!input) return;
       const val = input.value || null;
       const data = loadData();
       const day = getDay(data, currentDateStr());
@@ -473,16 +548,23 @@
     function addHydration() {
       const type = document.getElementById('hydrationType').value;
       const amount = parseFloat(document.getElementById('hydrationAmount').value || '0');
+      let timeVal = document.getElementById('hydrationTime').value;
+
       if (!amount || amount <= 0) return;
+      if (!timeVal) timeVal = formatTime(new Date());
 
       const data = loadData();
       const day = getDay(data, currentDateStr());
       day.hydration.push({
         type,
         amountOz: amount,
-        time: formatTime(new Date())
+        time: timeVal
       });
       saveData(data);
+
+      // Set next default time to "now" so it's convenient for live logging
+      document.getElementById('hydrationTime').value = formatTime(new Date());
+
       renderCurrentDay();
       updateStats();
     }
@@ -502,6 +584,7 @@
       const data = loadData();
       const day = getDay(data, currentDateStr());
       day.meds = {};
+      day.fastingAfterAlendronate = null;
       saveData(data);
       renderCurrentDay();
       updateStats();
@@ -543,17 +626,17 @@
       // Hydration stats
       let hydrationTotals = [];
       inRangeDates.forEach(d => {
-        const day = data[d];
+        const day = getDay(data, d);
         const total = (day.hydration || []).reduce((sum, h) => sum + (h.amountOz || 0), 0);
         hydrationTotals.push(total);
       });
+
       const daysCount = hydrationTotals.length;
       const sumHyd = hydrationTotals.reduce((a,b) => a+b, 0);
       const avgHyd = sumHyd / daysCount;
       const targetDays = hydrationTotals.filter(v => v >= HYDRATION_TARGET_OZ).length;
 
-      const hydStatsDiv = document.getElementById('hydrationStats');
-      hydStatsDiv.innerHTML = `
+      document.getElementById('hydrationStats').innerHTML = `
         <div class="stat">Days in range: <b>${daysCount}</b></div>
         <div class="stat">Avg hydration: <b>${avgHyd.toFixed(1)} oz/day</b></div>
         <div class="stat">Days hitting target: <b>${targetDays}</b> (${(targetDays / daysCount * 100).toFixed(0)}%)</div>
@@ -562,8 +645,9 @@
       // Med stats
       let totalMedEvents = 0;
       let onTimeEvents = 0;
+
       inRangeDates.forEach(d => {
-        const day = data[d];
+        const day = getDay(data, d);
         const meds = day.meds || {};
         Object.values(meds).forEach(m => {
           totalMedEvents += 1;
@@ -571,14 +655,13 @@
         });
       });
 
-      const medStatsDiv = document.getElementById('medStats');
       if (!totalMedEvents) {
-        medStatsDiv.innerHTML = '<div class="small">No meds logged in this range.</div>';
+        document.getElementById('medStats').innerHTML = '<div class="small">No meds logged in this range.</div>';
       } else {
         const pct = (onTimeEvents / totalMedEvents * 100).toFixed(0);
-        medStatsDiv.innerHTML = `
+        document.getElementById('medStats').innerHTML = `
           <div class="stat">Meds logged: <b>${totalMedEvents}</b></div>
-          <div class="stat">Taken in recommended time window: <b>${onTimeEvents}</b> (${pct}%)</div>
+          <div class="stat">Taken in required window: <b>${onTimeEvents}</b> (${pct}%)</div>
         `;
       }
     }
@@ -596,8 +679,7 @@
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      const status = document.getElementById('backupStatus');
-      status.textContent = 'Backup downloaded.';
+      document.getElementById('backupStatus').textContent = 'Backup downloaded.';
     }
 
     function triggerImport() {
@@ -632,9 +714,8 @@
     // --- INIT ---
 
     document.addEventListener('DOMContentLoaded', () => {
-      const daySelect = document.getElementById('daySelect');
-      daySelect.addEventListener('change', () => {
-        dayOffset = parseInt(daySelect.value, 10) || 0;
+      document.getElementById('daySelect').addEventListener('change', (e) => {
+        dayOffset = parseInt(e.target.value, 10) || 0;
         renderCurrentDay();
         updateStats();
       });
